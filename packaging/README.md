@@ -29,14 +29,14 @@ provider replacement and race tests before rebasing.
 `packaging/toolchain.lock.json` pins the checksum of the upstream workflow's
 MetaCubeX Go 1.26 toolchain. Preserve `with_gvisor`, CGO=0, trimpath and upstream
 linker settings for static Linux arm64 (Android's existing executable launcher)
-and Windows amd64-v1. This does not introduce a new FFI ABI. Keep the source CA
+Windows amd64-v1 and macOS arm64/amd64-v1. This does not introduce a new FFI ABI. Keep the source CA
 bundle for reproducibility rather than injecting the runner's current CA bytes.
 
 The existing `wahoo-soft/v2ray-mihomo` packaging repository runs
 `wahoo-mihomo-core.yml`, checks out an exact commit of this fork, runs race tests,
-builds both targets, publishes archives + manifest + GPL license to
+builds all four targets, publishes archives + manifest + GPL license to
 `registry.wahooai.com/v2ray/wahoo-mihomo`, resolves its immutable OCI digest and
-generates both app locks. Credentials remain in the packaging repository.
+generates Android, Windows Direct and macOS Direct app locks. Credentials remain in the packaging repository.
 No branch, floating tag, or latest reference is accepted by consumers.
 
 App builds use `repository@sha256:...` and verify archive and executable hashes
@@ -55,4 +55,5 @@ connection/failure telemetry during QA. Do not claim real-tunnel verification fr
 unit tests or compilation. Required Android VpnService and Windows Direct tests:
 DNS, IPv4/IPv6, TCP, UDP/QUIC, Reality, XHTTP H2/H3, local rule sets, reconnect,
 network changes and sleep/wake, plus healthy sticky selection and failed-node
-recovery. Windows Store Leaf and Apple sing-box are outside this release.
+recovery. macOS Direct also consumes this fork, with both checked slices combined using lipo.
+Windows Store Leaf and iOS/macOS Store sing-box are outside this release.

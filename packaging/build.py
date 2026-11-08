@@ -35,6 +35,8 @@ def main():
     for platform, goos, goarch, name in (
         ("linux-arm64-on-android", "linux", "arm64", "mihomo"),
         ("windows-amd64-v1", "windows", "amd64", "mihomo-windows-amd64-v1.exe"),
+        ("darwin-arm64", "darwin", "arm64", "mihomo-arm64"),
+        ("darwin-amd64-v1", "darwin", "amd64", "mihomo-x86_64"),
     ):
         output = dist / platform / name
         output.parent.mkdir(exist_ok=True)

@@ -24,6 +24,10 @@ def main():
         upstream_version=source["upstreamTag"], upstream_commit=source["upstreamCommit"],
         archive=android["archive"], sha256=android["executable"]["sha256"], size=android["executable"]["sizeBytes"],
         output="app/src/main/jniLibs/arm64-v8a/libmihomo.so"), indent=2) + "\n")
+    mac = dict(common, runtime="mihomo", platform="darwin-universal",
+               architectures={arch: manifest["platforms"][platform]
+                              for arch, platform in (("arm64", "darwin-arm64"), ("x86_64", "darwin-amd64-v1"))})
+    (locks / "mihomo-macos-lock.json").write_text(json.dumps(mac, indent=2) + "\n")
     executable = dict(windows["executable"], archivePath=windows["executable"]["fileName"],
                       packagePath="src/Winui3V2ray/bin/Mihomo/mihomo-windows-amd64-v1.exe")
     (locks / "mihomo.lock.json").write_text(json.dumps(dict(common,
