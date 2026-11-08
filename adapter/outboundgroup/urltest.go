@@ -4,11 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"time"
+	"math/rand"
+	"sync"
 
 	"github.com/metacubex/mihomo/common/callback"
 	N "github.com/metacubex/mihomo/common/net"
-	"github.com/metacubex/mihomo/common/singledo"
 	"github.com/metacubex/mihomo/common/utils"
 	C "github.com/metacubex/mihomo/constant"
 	P "github.com/metacubex/mihomo/constant/provider"
@@ -26,7 +26,7 @@ type URLTest struct {
 	tolerance      uint16
 	disableUDP     bool
 	fastNode       C.Proxy
-	fastSingle     *singledo.Single[C.Proxy]
+	selectionMu    sync.Mutex
 }
 
 func (u *URLTest) Now() string {
@@ -49,8 +49,9 @@ func (u *URLTest) Set(name string) error {
 }
 
 func (u *URLTest) ForceSet(name string) {
+	u.selectionMu.Lock()
+	defer u.selectionMu.Unlock()
 	u.selected = name
-	u.fastSingle.Reset()
 }
 
 // DialContext implements C.ProxyAdapter
@@ -95,57 +96,72 @@ func (u *URLTest) Unwrap(metadata *C.Metadata, touch bool) C.Proxy {
 }
 
 func (u *URLTest) healthCheck() {
-	u.fastSingle.Reset()
 	u.GroupBase.healthCheck()
-	u.fastSingle.Reset()
 }
 
+// Selection is serialized independently of health checks. Do not cache the chosen
+// proxy: provider replacement and a confirmed failure must be visible immediately.
 func (u *URLTest) fast(touch bool) C.Proxy {
-	elm, _, shared := u.fastSingle.Do(func() (C.Proxy, error) {
-		proxies := u.GetProxies(touch)
-		if u.selected != "" {
-			for _, proxy := range proxies {
-				if !proxy.AliveForTestUrl(u.testUrl) {
-					continue
-				}
-				if proxy.Name() == u.selected {
-					u.fastNode = proxy
-					return proxy, nil
-				}
-			}
+	u.selectionMu.Lock()
+	defer u.selectionMu.Unlock()
+
+	proxies := u.GetProxies(touch)
+	if len(proxies) == 0 {
+		u.fastNode = nil
+		return u.EmptyFallback()
+	}
+	// Preserve the upstream explicit API override. Automatic selection does not
+	// use this field and recovered automatic nodes cannot reclaim the selection.
+	for _, proxy := range proxies {
+		if proxy.Name() == u.selected && proxy.AliveForTestUrl(u.testUrl) {
+			u.fastNode = proxy
+			return proxy
 		}
-
-		fast := proxies[0]
-		minDelay := fast.LastDelayForTestUrl(u.testUrl)
-		fastNotExist := true
-
-		for _, proxy := range proxies[1:] {
-			if u.fastNode != nil && proxy.Name() == u.fastNode.Name() {
-				fastNotExist = false
-			}
-
-			if !proxy.AliveForTestUrl(u.testUrl) {
-				continue
-			}
-
-			delay := proxy.LastDelayForTestUrl(u.testUrl)
-			if delay < minDelay {
-				fast = proxy
-				minDelay = delay
-			}
-
+	}
+	for _, proxy := range proxies {
+		if u.fastNode != nil && proxy.Name() == u.fastNode.Name() && proxy.AliveForTestUrl(u.testUrl) {
+			// Use the new provider object, even if its name has not changed.
+			u.fastNode = proxy
+			return proxy
 		}
-		// tolerance
-		if u.fastNode == nil || fastNotExist || !u.fastNode.AliveForTestUrl(u.testUrl) || u.fastNode.LastDelayForTestUrl(u.testUrl) > fast.LastDelayForTestUrl(u.testUrl)+u.tolerance {
-			u.fastNode = fast
-		}
-		return u.fastNode, nil
-	})
-	if shared && touch { // a shared fastSingle.Do() may cause providers untouched, so we touch them again
-		u.Touch()
 	}
 
-	return elm
+	type candidate struct {
+		proxy C.Proxy
+		delay uint16
+	}
+	var candidates []candidate
+	minDelay := uint32(0xffff)
+	for _, proxy := range proxies {
+		if !proxy.AliveForTestUrl(u.testUrl) {
+			continue
+		}
+		delay := proxy.LastDelayForTestUrl(u.testUrl)
+		// Upstream uses 0xffff for missing/failed samples; zero is not a
+		// successful RTT either. Never let an untested proxy enter the pool.
+		if delay == 0 || delay == 0xffff {
+			continue
+		}
+		candidates = append(candidates, candidate{proxy, delay})
+		if uint32(delay) < minDelay {
+			minDelay = uint32(delay)
+		}
+	}
+	var pool []C.Proxy
+	for _, candidate := range candidates {
+		// Widen before adding tolerance to avoid uint16 overflow.
+		if uint32(candidate.delay) <= minDelay+uint32(u.tolerance) {
+			pool = append(pool, candidate.proxy)
+		}
+	}
+	if len(pool) == 0 {
+		// Keep upstream's first-proxy behavior when no result is usable, but
+		// do not pin this provisional choice before the first successful test.
+		u.fastNode = nil
+		return proxies[0]
+	}
+	u.fastNode = pool[rand.Intn(len(pool))]
+	return u.fastNode
 }
 
 // SupportUDP implements C.ProxyAdapter
@@ -167,13 +183,17 @@ func (u *URLTest) MarshalJSON() ([]byte, error) {
 	for _, proxy := range u.GetProxies(false) {
 		all = append(all, proxy.Name())
 	}
+	now := u.Now()
+	u.selectionMu.Lock()
+	fixed := u.selected
+	u.selectionMu.Unlock()
 	return json.Marshal(map[string]any{
 		"type":           u.Type().String(),
-		"now":            u.Now(),
+		"now":            now,
 		"all":            all,
 		"testUrl":        u.testUrl,
 		"expectedStatus": u.expectedStatus,
-		"fixed":          u.selected,
+		"fixed":          fixed,
 		"hidden":         u.Hidden(),
 		"icon":           u.Icon(),
 		"emptyFallback":  u.EmptyFallback().Name(),
@@ -210,7 +230,6 @@ func NewURLTest(option GroupCommonOption, urlTestOption URLTestOption, emptyFall
 			EmptyFallback:  emptyFallback,
 			Providers:      providers,
 		}),
-		fastSingle:     singledo.NewSingle[C.Proxy](time.Second * 10),
 		disableUDP:     option.DisableUDP,
 		testUrl:        option.URL,
 		expectedStatus: option.ExpectedStatus,

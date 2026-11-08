@@ -26,3 +26,6 @@ test/config/cache*
 /output
 .vscode/
 .fleet/
+
+# Wahoo reproducible core build outputs
+/dist/
